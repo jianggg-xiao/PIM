@@ -28,7 +28,6 @@ parser.add_argument('--bs', type=int, default=256, help='batch size')
 parser.add_argument('--bn', type=int, default=100, help='batch number')
 parser.add_argument('--tr', type=int, default=0.8, help='train ratio')
 parser.add_argument('--chnl', type=int, default=16, help='channel number')
-parser.add_argument('--save', type=str, default='EXP', help='experiment name')
 
 args = parser.parse_args()
 
