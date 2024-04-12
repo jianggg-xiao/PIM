@@ -3,6 +3,8 @@ import logging
 import sys
 import time
 import os
+
+import matplotlib.pyplot as plt
 import torch.nn as nn
 import torch
 from torch.nn.parallel import parallel_apply
@@ -30,16 +32,16 @@ project_path = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
 parser = argparse.ArgumentParser("pimc")
 parser.add_argument('--addr', type=str, default=project_path + '/data/')
 parser.add_argument('--name', type=str, default='pim_16t_221110_38dBm_fr4_rnd32_1.pth')
-parser.add_argument('--lr', type=float, default=1e-2, help='init learning rate')
+parser.add_argument('--lr', type=float, default=1e-3, help='init learning rate')
 parser.add_argument('--step', type=int, default=50, help='decay step')
 parser.add_argument('--lr_gamma', type=float, default=0.5, help='decay rate')
-parser.add_argument('--epochs', type=int, default=1, help='num of training epochs')
+parser.add_argument('--epochs', type=int, default=300, help='num of training epochs')
 parser.add_argument('--seed', type=int, default=2, help='random seed')
 parser.add_argument('--pop_size', type=int, default=20)
 parser.add_argument('--generation', type=int, default=100)
-parser.add_argument('--device', type=str, default='cpu')
-parser.add_argument('--bs', type=int, default=256, help='batch size')
-parser.add_argument('--bn', type=int, default=20, help='batch number')
+parser.add_argument('--device', type=str, default='cuda:0')
+parser.add_argument('--bs', type=int, default=4096, help='batch size')
+parser.add_argument('--bn', type=int, default=100, help='batch number')
 parser.add_argument('--tr', type=int, default=0.8, help='train ratio')
 parser.add_argument('--chnl', type=int, default=16, help='channel number')
 
@@ -188,10 +190,13 @@ def ea():
             f'----------------------res.F:-----------------------\n'
             f'{np.array2string(res.F, formatter={"float_kind": lambda x: "%.2f" % x})}\n')
 
-    # calculate a hash to show that all executions end with the same result
-    plot = Scatter()
-    plot.add(res.F, facecolor="none", edgecolor="red")
-    plot.show()
+        # calculate a hash to show that all executions end with the same result
+        plt.scatter(res.F[:, 0], res.F[:, 1], label=f'gen_{n_gen}')
+        plt.grid()
+        plt.legend()
+        plt.xlabel('-ape')
+        plt.ylabel('param_num')
+        plt.savefig(f'pareto_front.png')
 
 
 if __name__ == '__main__':
