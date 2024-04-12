@@ -5,6 +5,7 @@ import time
 import os
 import torch.nn as nn
 import torch
+from torch.nn.parallel import parallel_apply
 import scipy.signal as signal
 import numpy as np
 from modules import ComplexConv, LUT1D
@@ -34,8 +35,7 @@ parser.add_argument('--step', type=int, default=50, help='decay step')
 parser.add_argument('--lr_gamma', type=float, default=0.5, help='decay rate')
 parser.add_argument('--epochs', type=int, default=1, help='num of training epochs')
 parser.add_argument('--seed', type=int, default=2, help='random seed')
-# parser.add_argument('--pop_size', type=int, default=20)
-# parser.add_argument('--mut_rate', type=float, default=0.8)
+parser.add_argument('--pop_size', type=int, default=20)
 parser.add_argument('--generation', type=int, default=100)
 parser.add_argument('--device', type=str, default='cpu')
 parser.add_argument('--bs', type=int, default=256, help='batch size')
@@ -76,7 +76,7 @@ class Block(nn.Module):
         x3 = self.L3(x2)
         x4 = self.L4(x3)
         x5 = self.L5(x4)
-        return x5
+        return x5.unsqueeze(0)
 
 
 class Model(nn.Module):
@@ -87,22 +87,14 @@ class Model(nn.Module):
         self.blocks = nn.ModuleList([Block(args[i, :]) for i in range(self.n)])
 
     def forward(self, input, target):
-        logits_all = torch.zeros((input.shape[0], input.shape[1], self.n), dtype=torch.cfloat).to(args.device)
-        err_all = torch.zeros((input.shape[0], input.shape[1], self.n), dtype=torch.cfloat).to(args.device)
-        err_mean = torch.zeros(self.n).to(args.device)
-        for i in range(self.n):
-            logits = self.blocks[i](input)
-            err = target - logits
-            err_flt = torch.conv1d(err.T.unsqueeze(0).cfloat(),
-                                   torch.flip(torch.from_numpy(flt).unsqueeze(0).unsqueeze(0).
-                                              repeat(err.shape[1], 1, 1).to(args.device).cfloat(), [-1]),
-                                   padding='same', groups=err.shape[1]).squeeze(0).T
-            err_mean[i] = (err_flt.abs() ** 2).mean()
-
-            logits_all[:, :, i] = logits.data
-            err_all[:, :, i] = err_flt.data
-        loss = err_mean.sum()
-        return logits_all, err_all, loss
+        output = torch.cat(parallel_apply(self.blocks, [input for _ in range(self.n)]), dim=0)
+        err = target.unsqueeze(0) - output
+        err_flt = torch.conv1d(err.permute(0, 2, 1).cfloat(),
+                               torch.flip(torch.from_numpy(flt).unsqueeze(0).unsqueeze(0)
+                                          .repeat(err.shape[-1], 1, 1).to(args.device).cfloat(), [-1]),
+                               padding='same', groups=err.shape[-1])
+        loss = (err_flt.abs()**2).mean() * err.shape[0]
+        return output, err, loss
 
 
 def train(train_queue, model, optimizer):
@@ -115,16 +107,16 @@ def train(train_queue, model, optimizer):
 
 
 def infer(valid_queue, model, scale):
-    logits_all, err_all = [], []
+    output_all, err_all = [], []
     for input, target in valid_queue:
         input, target = input.to(args.device), target.to(args.device)
-        logits, err, _ = model(input, target)
-        logits_all.append(logits)
+        output, err, _ = model(input, target)
+        output_all.append(output)
         err_all.append(err)
 
-    logits_all, err_all = torch.cat(logits_all, dim=0), torch.cat(err_all, dim=0)
-    return (logits_all.permute(1, 0, 2).cpu().detach().numpy() * scale,
-            err_all.permute(1, 0, 2).cpu().detach().numpy() * scale)
+    output_all, err_all = torch.cat(output_all, dim=1), torch.cat(err_all, dim=1)
+    return (output_all.permute(2, 1, 0).cpu().detach().numpy() * scale,
+            err_all.permute(2, 1, 0).cpu().detach().numpy() * scale)
 
 
 def supernet(pop):
@@ -152,7 +144,7 @@ def supernet(pop):
             ape_all[i, 0] = ape_val
         k = np.argmax(ape_all[:, 0])
         print('epoch:', epoch, 'cost time:', round(end - start, 2),
-              'pim:', pim_val, 'max_ape:', ape_all[k, 0], 'best arg:', pop[k])
+              'pim:', pim_val, 'max_ape:', ape_all[k, 0], 'best arg:', pop[k], 'param_num:', param_num[k])
     return np.hstack((-ape_all, param_num))
 
 
@@ -160,7 +152,7 @@ def ea():
     problem = Problem(n_var=5, n_obj=2, vtype=int, xl=np.ones(5), xu=np.array([4, 49, 4, 51, 20]))
 
     # create the algorithm object
-    algorithm = NSGA2(pop_size=20,
+    algorithm = NSGA2(pop_size=args.pop_size,
                       sampling=IntegerRandomSampling(),
                       crossover=SBX(prob=1.0, eta=3.0, vtype=float, repair=RoundingRepair()),
                       mutation=PM(prob=1.0, eta=3.0, vtype=float, repair=RoundingRepair()),
